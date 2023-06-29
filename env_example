@@ -1,0 +1,5 @@
+pgsql_host = 'localhost'
+pgsql_port = 5432
+pgsql_user = 'user'
+pgsql_password = 'password'
+pgsql_db = 'job'
