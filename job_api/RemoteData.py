@@ -1,14 +1,12 @@
 import json
 import math
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import sessionmaker
 import requests
 from datetime import timedelta, date, datetime
-
 from job_api.models import engine, Vacancy, Query
-
-# from job_api.DB import DB
+from job_api.logger import debug, info, warning, error
 
 HH_URL = "https://api.hh.ru/vacancies"
 TRUD_VSEM_URL = "http://opendata.trudvsem.ru/api/v1/vacancies"
@@ -63,6 +61,7 @@ class RemoteData:
         date_from = date.today() - timedelta(days=period)
         date_to = date.today() - timedelta(days=1)
         source = 'hh.ru'
+        num_loaded = 0
 
         result = requests.get(HH_URL, params)
         if not result.ok:
@@ -74,33 +73,33 @@ class RemoteData:
                 quantity=0,
                 error="Error get_hh_list can't load data"
             )
+            error("Error get_hh_list can't load data")
             return -1
         vacancies = result.json()['items']
-        cls.save_hh(vacancies)
+        num_loaded += cls.vacancy_hh(vacancies)
         pages = result.json()['pages']
-        num_saved = 0
         for page in range(1, pages):
             params['page'] = page
             result = requests.get(HH_URL, params)
             if result.ok:
                 vacancies = result.json()['items']
-                num_saved += cls.save_hh(vacancies)
+                num_loaded += cls.vacancy_hh(vacancies)
         cls.log_query(
             text=text,
             date_from=date_from,
             date_to=date_to,
             source=source,
-            quantity=num_saved,
+            quantity=num_loaded,
             error=""
         )
-        return num_saved
+        return num_loaded
 
     @staticmethod
     def get_hh_one(vacancy_id: int) -> bool:
         pass
 
     @classmethod
-    def save_hh(cls, vacancies: dict) -> int:
+    def vacancy_hh(cls, vacancies: dict) -> int:
         cls.set_db()
         num_processed = 0
         for vacancy in vacancies:
@@ -153,15 +152,24 @@ class RemoteData:
 
     @classmethod
     def save(cls, new_vacancy: Vacancy) -> None:
-        result = cls.session.query(func.get_vacancy(new_vacancy.source, new_vacancy.source_id)).first()
+        function = text("SELECT * FROM get_vacancy(:source, :source_id)")
+        rows = cls.session.execute(function, {'source': new_vacancy.source, 'source_id': new_vacancy.source_id})
+        result = rows.fetchone()
+        # debug(f'Row: {type(row)} = {row}')
+        # result = Vacancy(cls.session.query(func.get_vacancy(new_vacancy.source, new_vacancy.source_id)).first()[0])
         if result[0] is None:
+            debug(f'Vacancy not found: {new_vacancy.source} - {new_vacancy.source_id}')
             cls.session.add(new_vacancy)
             cls.inserted_records += 1
-            print('Added new vacancy: ', new_vacancy.source_id)
+            # debug(f'Added new vacancy: {new_vacancy.source_id}')
         else:
+            # cls.session.merge(new_vacancy)
+            # merge не работает должным образом, вставляет данные вместо update.
+            # Костыль?
+            new_vacancy.id = result[0]
             cls.session.merge(new_vacancy)
             cls.updated_records += 1
-            print('Updated vacancy: ', new_vacancy.source_id)
+            # debug(f'Updated vacancy: {new_vacancy.source_id}')
         cls.session.commit()
 
     @classmethod
@@ -179,26 +187,22 @@ class RemoteData:
             'limit': limit,
             'modifiedFrom': modified_from
         }
-        print(f'Params: {params}')
         result = requests.get(TRUD_VSEM_URL, params)
         if not result.ok:
             return "Error get_trud_vsem_list can't load data"
         vacancies = result.json()['results']['vacancies']
-        num_loaded += cls.save_trud_vsem(vacancies)
+        num_loaded += cls.vacancy_trud_vsem(vacancies)
         total = result.json()['meta']['total']
-        print(result.json()['meta'])
         pages = math.ceil(total / limit)
-        print(f'Pages: {pages}')
         for page in range(1, pages):
             # Странно, но offset считают так
             params['offset'] = page  # (page - 1) * limit + 1
-            print(params)
             result = requests.get(TRUD_VSEM_URL, params)
             if 'results' in result.json():
                 vacancies = result.json()['results']['vacancies']
-                num_loaded += cls.save_trud_vsem(vacancies)
+                num_loaded += cls.vacancy_trud_vsem(vacancies)
             else:
-                print(f"No results in {result.json()}")
+                info(f"No results in {result.json()}")
         cls.log_query(
             text=text,
             date_from=date_from,
@@ -212,9 +216,9 @@ class RemoteData:
 
 
     @classmethod
-    def save_trud_vsem(cls, vacancies: list) -> int:
+    def vacancy_trud_vsem(cls, vacancies: list) -> int:
         cls.set_db()
-        num_saved = 0
+        num_processed = 0
         for item in vacancies:
             vacancy = item['vacancy']
             if isinstance(vacancy['addresses'], dict):
@@ -254,8 +258,8 @@ class RemoteData:
                 employment=vacancy['employment']
             )
             cls.save(new_vacancy)
-            num_saved += 1
-        return num_saved
+            num_processed += 1
+        return num_processed
 
     @classmethod
     def log_query(
