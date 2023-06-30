@@ -1,4 +1,4 @@
-CREATE OR REPLACE FUNCTION get_statuses(p_user INTEGER, p_vacancy INTEGER[])
+CREATE OR REPLACE FUNCTION get_statuses_arr(p_user INTEGER, p_vacancy INTEGER[])
 RETURNS TABLE (vacancy_id INTEGER, fav TEXT, res TEXT, rej TEXT, del TEXT) AS $$
 BEGIN
     RETURN QUERY
@@ -16,4 +16,4 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- check function --
-SELECT * FROM get_statuses(1, ARRAY[1, 2, 3]);
+-- SELECT * FROM get_statuses(1, ARRAY[1, 2, 3]);

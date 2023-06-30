@@ -11,6 +11,6 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- check function --
-SELECT * FROM get_statuses(0, 10);
-SELECT * FROM get_statuses(0, 11);
+-- SELECT * FROM get_statuses(0, 10);
+-- SELECT * FROM get_statuses(0, 11);
 

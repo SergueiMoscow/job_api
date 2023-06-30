@@ -1,10 +1,14 @@
 import json
 import math
 
+from sqlalchemy import func
+from sqlalchemy.orm import sessionmaker
 import requests
 from datetime import timedelta, date, datetime
 
-from job_api.DB import DB
+from job_api.models import engine, Vacancy, Query
+
+# from job_api.DB import DB
 
 HH_URL = "https://api.hh.ru/vacancies"
 TRUD_VSEM_URL = "http://opendata.trudvsem.ru/api/v1/vacancies"
@@ -32,13 +36,16 @@ class RemoteData:
         'experience',
         'employment'
     ]
-    db = None
+    session = None
     user_id = 0
+    updated_records = 0
+    inserted_records = 0
 
     @classmethod
     def set_db(cls):
-        if cls.db is None:
-            cls.db = DB()
+        if cls.session is None:
+            _session = sessionmaker(bind=engine)
+            cls.session = _session()
 
     @classmethod
     def get_hh_list(cls, text: str, area: str, period: int = 5) -> int:
@@ -95,7 +102,7 @@ class RemoteData:
     @classmethod
     def save_hh(cls, vacancies: dict) -> int:
         cls.set_db()
-        num_saved = 0
+        num_processed = 0
         for vacancy in vacancies:
             if vacancy['salary'] is not None:
                 salary_from = vacancy['salary']['from']
@@ -112,7 +119,6 @@ class RemoteData:
                     address_metro = None
             else:
                 address_city, address_raw, address_metro = None, None, None
-            print(f"Emp: {type(vacancy['employer'])}")
             if 'employer' in vacancy:
                 if 'id' in vacancy['employer']:
                     employer_id = vacancy['employer']['id']
@@ -120,31 +126,43 @@ class RemoteData:
                     employer_id = None
             else:
                 employer_id = None
-            values = (
-                'hh',
-                vacancy['id'],
-                vacancy['name'],
-                vacancy['area']['name'],
-                salary_from,
-                salary_to,
-                salary_currency,
-                vacancy['type']['name'],
-                address_city,
-                address_raw,
-                address_metro,
-                vacancy['published_at'],
-                vacancy['alternate_url'],
-                vacancy['url'],
-                employer_id,
-                vacancy['snippet']['requirement'],
-                vacancy['snippet']['responsibility'],
-                vacancy['experience']['name'],
-                vacancy['employment']['name']
+            new_vacancy = Vacancy(
+                source='hh.ru',
+                source_id=vacancy['id'],
+                name=vacancy['name'],
+                area=vacancy['area']['name'],
+                salary_from=salary_from,
+                salary_to=salary_to,
+                salary_currency=salary_currency,
+                status=vacancy['type']['name'],
+                address_city=address_city,
+                address_street=address_raw,
+                address_metro=address_metro,
+                published_at=vacancy['published_at'],
+                url=vacancy['alternate_url'],
+                url_api=vacancy['url'],
+                employer_id=employer_id,
+                requirement=vacancy['snippet']['requirement'],
+                responsibility=vacancy['snippet']['responsibility'],
+                experience=vacancy['experience']['name'],
+                employment=vacancy['employment']['name']
             )
-            where = f"source_id='{vacancy['id']}'"
-            cls.db.update_or_insert_one('vacancies', cls.fields, values, where)
-            num_saved += 1
-        return num_saved
+            cls.save(new_vacancy)
+            num_processed += 1
+        return num_processed
+
+    @classmethod
+    def save(cls, new_vacancy: Vacancy) -> None:
+        result = cls.session.query(func.get_vacancy(new_vacancy.source, new_vacancy.source_id)).first()
+        if result[0] is None:
+            cls.session.add(new_vacancy)
+            cls.inserted_records += 1
+            print('Added new vacancy: ', new_vacancy.source_id)
+        else:
+            cls.session.merge(new_vacancy)
+            cls.updated_records += 1
+            print('Updated vacancy: ', new_vacancy.source_id)
+        cls.session.commit()
 
     @classmethod
     def get_trud_vsem_list(cls, text: str, area: str, period: int = 5):
@@ -214,29 +232,28 @@ class RemoteData:
                 qualification = vacancy['requirement']['qualification']
             else:
                 qualification = ''
-            values = (
-                'trudvsem',
-                vacancy['id'],
-                vacancy['job-name'],
-                region,
-                vacancy['salary_min'],
-                vacancy['salary_max'],
-                vacancy['currency'][:3],
-                '?',
-                None,
-                address_raw,
-                None,
-                vacancy['creation-date'],
-                vacancy['vac_url'],
-                f"TRUD_VSEM_URL/vacancy/{vacancy['company']['companycode']}/{vacancy['id']}",
-                vacancy['company']['companycode'],
-                f"{vacancy['requirement']['education']}/{qualification}",
-                vacancy['duty'],
-                vacancy['requirement']['experience'],
-                vacancy['employment']
+            new_vacancy = Vacancy(
+                source='trudvsem',
+                source_id=vacancy['id'],
+                name=vacancy['job-name'],
+                area=region,
+                salary_from=vacancy['salary_min'],
+                salary_to=vacancy['salary_max'],
+                salary_currency=vacancy['currency'][:3],
+                status='?',
+                address_city=None,
+                address_street=address_raw,
+                address_metro=None,
+                published_at=vacancy['creation-date'],
+                url=vacancy['vac_url'],
+                url_api=f"{TRUD_VSEM_URL}/vacancy/{vacancy['company']['companycode']}/{vacancy['id']}",
+                employer_id=vacancy['company']['companycode'],
+                requirement=f"{vacancy['requirement']['education']}/{qualification}",
+                responsibility=vacancy['duty'],
+                experience=vacancy['requirement']['experience'],
+                employment=vacancy['employment']
             )
-            where = f"source_id='{vacancy['id']}'"
-            cls.db.update_or_insert_one('vacancies', cls.fields, values, where)
+            cls.save(new_vacancy)
             num_saved += 1
         return num_saved
 
@@ -262,14 +279,16 @@ class RemoteData:
             'error',
             'created_at'
         ]
-        values = (
-            cls.user_id,
-            text,
-            date_from,
-            date_to,
-            source,
-            quantity,
-            error,
-            created_at
+        log_query = Query(
+            user_id=cls.user_id,
+            text=text,
+            date_from=date_from,
+            date_to=date_to,
+            source=source,
+            quantity=quantity,
+            error=error,
+            created_at=created_at
         )
-        cls.db.insert('queries', fields, values)
+        cls.session.add(log_query)
+        cls.session.commit()
+

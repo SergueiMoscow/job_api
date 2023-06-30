@@ -20,6 +20,7 @@ CREATE TABLE public.vacancies (
     experience VARCHAR(50) DEFAULT NULL,
     employment VARCHAR(50) DEFAULT NULL
 );
+
 CREATE INDEX vacancies_id ON public.vacancies USING btree (id);
 CREATE INDEX vacancies_area ON public.vacancies USING btree (area);
 CREATE INDEX vacancies_salary_from ON public.vacancies USING btree (salary_from);
