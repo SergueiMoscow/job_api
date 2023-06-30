@@ -1,12 +1,11 @@
-import json
 import math
 
-from sqlalchemy import func, text
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 import requests
 from datetime import timedelta, date, datetime
 from job_api.models import engine, Vacancy, Query
-from job_api.logger import debug, info, warning, error
+from job_api.logger import debug, info, error
 
 HH_URL = "https://api.hh.ru/vacancies"
 TRUD_VSEM_URL = "http://opendata.trudvsem.ru/api/v1/vacancies"
@@ -40,13 +39,24 @@ class RemoteData:
     inserted_records = 0
 
     @classmethod
-    def set_db(cls):
+    def __set_db(cls):
         if cls.session is None:
             _session = sessionmaker(bind=engine)
             cls.session = _session()
 
     @classmethod
     def get_hh_list(cls, text: str, area: str, period: int = 5) -> int:
+        """
+        Получаем список вакансий по запросу из hh.ru
+
+        Args:
+            text: текст, который должен содержаться в вакансии
+            area: район
+            period: период в днях
+
+        Returns:
+            количество подгруженных и обработанных вакансий
+        """
         # https://api.hh.ru/vacancies?per_page=10&page=0&period=2&text=python&experience=noExperience
         url = f'{HH_URL}'
         params = {
@@ -65,7 +75,7 @@ class RemoteData:
 
         result = requests.get(HH_URL, params)
         if not result.ok:
-            cls.log_query(
+            cls.__log_query(
                 text=text,
                 date_from=date_from,
                 date_to=date_to,
@@ -76,15 +86,15 @@ class RemoteData:
             error("Error get_hh_list can't load data")
             return -1
         vacancies = result.json()['items']
-        num_loaded += cls.vacancy_hh(vacancies)
+        num_loaded += cls.__vacancies_hh(vacancies)
         pages = result.json()['pages']
         for page in range(1, pages):
             params['page'] = page
             result = requests.get(HH_URL, params)
             if result.ok:
                 vacancies = result.json()['items']
-                num_loaded += cls.vacancy_hh(vacancies)
-        cls.log_query(
+                num_loaded += cls.__vacancies_hh(vacancies)
+        cls.__log_query(
             text=text,
             date_from=date_from,
             date_to=date_to,
@@ -99,8 +109,17 @@ class RemoteData:
         pass
 
     @classmethod
-    def vacancy_hh(cls, vacancies: dict) -> int:
-        cls.set_db()
+    def __vacancies_hh(cls, vacancies: dict) -> int:
+        """
+        Парсит JSON из hh.ru, создавая для каждого объект вакансии
+
+        Args:
+            vacancies: - dictionary (JSON из hh.ru)
+
+        Returns:
+            количество обработанных вакансий:
+        """
+        cls.__set_db()
         num_processed = 0
         for vacancy in vacancies:
             if vacancy['salary'] is not None:
@@ -146,22 +165,29 @@ class RemoteData:
                 experience=vacancy['experience']['name'],
                 employment=vacancy['employment']['name']
             )
-            cls.save(new_vacancy)
+            cls.__save(new_vacancy)
             num_processed += 1
         return num_processed
 
     @classmethod
-    def save(cls, new_vacancy: Vacancy) -> None:
+    def __save(cls, new_vacancy: Vacancy) -> None:
+        """
+        Сохраняет вакансию в базу данных, после проверки на существования по source и source_id
+
+        Args:
+            new_vacancy: Vacancy object
+
+        Returns:
+            None
+        """
+
         function = text("SELECT * FROM get_vacancy(:source, :source_id)")
         rows = cls.session.execute(function, {'source': new_vacancy.source, 'source_id': new_vacancy.source_id})
         result = rows.fetchone()
-        # debug(f'Row: {type(row)} = {row}')
-        # result = Vacancy(cls.session.query(func.get_vacancy(new_vacancy.source, new_vacancy.source_id)).first()[0])
         if result[0] is None:
             debug(f'Vacancy not found: {new_vacancy.source} - {new_vacancy.source_id}')
             cls.session.add(new_vacancy)
             cls.inserted_records += 1
-            # debug(f'Added new vacancy: {new_vacancy.source_id}')
         else:
             # cls.session.merge(new_vacancy)
             # merge не работает должным образом, вставляет данные вместо update.
@@ -169,11 +195,21 @@ class RemoteData:
             new_vacancy.id = result[0]
             cls.session.merge(new_vacancy)
             cls.updated_records += 1
-            # debug(f'Updated vacancy: {new_vacancy.source_id}')
         cls.session.commit()
 
     @classmethod
     def get_trud_vsem_list(cls, text: str, area: str, period: int = 5):
+        """
+        Получаем список вакансий по запросу из trudvsem.ru
+
+        Args:
+            text: текст, который должен содержаться в вакансии
+            area: район
+            period: период в днях
+
+        Returns:
+            количество подгруженных и обработанных вакансий
+        """
         date_from = date.today() - timedelta(days=period)
         date_to = date.today() - timedelta(days=1)
         source = 'trudvsem'
@@ -191,7 +227,7 @@ class RemoteData:
         if not result.ok:
             return "Error get_trud_vsem_list can't load data"
         vacancies = result.json()['results']['vacancies']
-        num_loaded += cls.vacancy_trud_vsem(vacancies)
+        num_loaded += cls.__vacancies_trud_vsem(vacancies)
         total = result.json()['meta']['total']
         pages = math.ceil(total / limit)
         for page in range(1, pages):
@@ -200,10 +236,10 @@ class RemoteData:
             result = requests.get(TRUD_VSEM_URL, params)
             if 'results' in result.json():
                 vacancies = result.json()['results']['vacancies']
-                num_loaded += cls.vacancy_trud_vsem(vacancies)
+                num_loaded += cls.__vacancies_trud_vsem(vacancies)
             else:
                 info(f"No results in {result.json()}")
-        cls.log_query(
+        cls.__log_query(
             text=text,
             date_from=date_from,
             date_to=date_to,
@@ -216,8 +252,17 @@ class RemoteData:
 
 
     @classmethod
-    def vacancy_trud_vsem(cls, vacancies: list) -> int:
-        cls.set_db()
+    def __vacancies_trud_vsem(cls, vacancies: list) -> int:
+        """
+        Парсит JSON из trudvsem.ru, создавая для каждого объекта JSON объект Vacancy
+
+        Args:
+            vacancies: - list (JSON из trudvsem.ru)
+
+        Returns:
+            количество обработанных вакансий
+        """
+        cls.__set_db()
         num_processed = 0
         for item in vacancies:
             vacancy = item['vacancy']
@@ -257,12 +302,12 @@ class RemoteData:
                 experience=vacancy['requirement']['experience'],
                 employment=vacancy['employment']
             )
-            cls.save(new_vacancy)
+            cls.__save(new_vacancy)
             num_processed += 1
         return num_processed
 
     @classmethod
-    def log_query(
+    def __log_query(
             cls,
             text: str,
             date_from: date,
@@ -270,8 +315,22 @@ class RemoteData:
             source: str,
             quantity: int,
             error: str = '',
-    ):
-        cls.set_db()
+    ) -> None:
+        """
+        Регистрирует результаты раоты в таблице queries
+
+        Args:
+            text: - ключевое слово поиска
+            date_from: - дата "с"
+            date_to: - дата "по"
+            source: откуда подгружены данные
+            quantity: количество подгруженных вакансий
+            error: ошибка
+
+        Returns:
+             None
+        """
+        cls.__set_db()
         created_at: str = datetime.now().strftime('%Y%m%d %H:%M:%S')
         fields = [
             'user_id',
